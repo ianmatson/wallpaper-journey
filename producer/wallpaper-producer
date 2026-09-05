@@ -25,6 +25,12 @@ set -a
 source "$ENV_FILE"
 set +a
 
+# Recovery uses the original episode date even after midnight.
+if [[ "${1:-}" == --date ]]; then
+  export AI_WALLPAPERS_RUN_DATE="${2:-}"
+  shift 2
+fi
+
 readonly PIPELINE="$REPOSITORY/producer/pipeline.zsh"
 [[ -x "$PIPELINE" ]] || die "producer pipeline is not executable: $PIPELINE"
 readonly WORKSPACE_ROOT="${AI_WALLPAPERS_WORKSPACE_ROOT:-$DEFAULT_WORKSPACE}"
@@ -72,6 +78,7 @@ valid_run_id() {
 
 begin_run() {
   local requested="${1:-}" run_id tmp
+  "$PIPELINE" story-guard >/dev/null
   [[ ! -L "$LEASE_FILE" ]] || die "run lease must not be a symlink: $LEASE_FILE"
   if [[ -e "$LEASE_FILE" ]]; then
     run_id="$(<"$LEASE_FILE")"
@@ -132,13 +139,18 @@ case "$COMMAND" in
   doctor|help|-h|--help)
     exec "$PIPELINE" "$@"
     ;;
+  story-context|story-outline|story-history|story-audit|story-journal|story-init|story-plan|story-baseline-correction)
+    exec "$PIPELINE" "$@"
+    ;;
   --run-id)
     readonly RUN_ID="${2:-}"
     require_run_lease "$RUN_ID"
+    export AI_WALLPAPERS_RUN_ID="$RUN_ID"
+    "$PIPELINE" story-guard >/dev/null
     shift 2
     readonly LEASED_COMMAND="${1:-}"
     case "$LEASED_COMMAND" in
-      context|preflight|references|continuity-log|append-continuity-log|accept-native|accept-story|validate-native|upscale|inspect-playlist|validate-playlist|replace-playlist|stage|publish|replace-release-assets|validate-release|completion-check)
+      context|preflight|references|continuity-log|append-continuity-log|accept-native|accept-story|validate-native|upscale|inspect-playlist|validate-playlist|replace-playlist|stage|publish|replace-release-assets|validate-release|completion-check|story-context|story-outline|story-history|story-audit|story-plan|story-prepare|story-finalize|story-commit)
         exec "$PIPELINE" "$@"
         ;;
       *) die "unsupported leased producer command: $LEASED_COMMAND" ;;

@@ -14,6 +14,17 @@ Current Linux production intentionally uses watcher-mode upscaling. The wrapper 
 
 ## Run lifecycle
 
+Narrative production first reads `story-context`, resumes its unfinished date/run,
+and follows the versioned episode plan. The leased sequence is `story-prepare`,
+image acceptance/upscale/review, `story-finalize`, playlist validation, `stage`,
+`publish`, `story-commit`, `completion-check`, and `end-run`. The public release
+includes a caption and 80–150 words of episode prose. `story-commit` owns the private
+journal append. See [narrative state](NARRATIVE.md) for input shapes, plan revisions,
+and exact-release recovery after midnight. The existing cast and journey may evolve
+through planned events; previous members and their consequences remain in history.
+
+The following sequence is retained for dates at or before the migration baseline:
+
 ```sh
 producer/wallpaper-producer begin-run RUN_ID
 producer/wallpaper-producer --run-id RUN_ID preflight
@@ -44,4 +55,4 @@ The continuity journal is stored outside the public repository and staging tree.
 
 Soundtrack rerolls use `replace-playlist`, followed by `stage` and `publish`; prior revisions remain archived. Supervised image corrections use revision roots and `replace-release-assets`, which requires and revalidates exactly the three expected release assets.
 
-Run `../tests/linux-producer.zsh` for the isolated deterministic fixture and `producer/wallpaper-producer doctor` for read-only host readiness. The fixture must pass before production changes are activated.
+Run `python3 tests/narrative-state.py` and `zsh tests/linux-producer.zsh` from the repository root for isolated state and publication fixtures, and `producer/wallpaper-producer doctor` for read-only host readiness. The fixtures must pass before production changes are activated.

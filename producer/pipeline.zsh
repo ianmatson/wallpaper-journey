@@ -56,6 +56,7 @@ readonly UPSCALED_DIR="$UPSCALED_ROOT/$TAG"
 readonly STAGING_DIR="$STAGING_ROOT/$TAG"
 readonly SPOTIFY_BASE="$STAGING_DIR/spotify-playlist.json"
 readonly STORY_FILE="$STAGING_DIR/story.txt"
+readonly EPISODE_FILE="$STAGING_DIR/episode.txt"
 readonly NOTES_BASE="$STAGING_DIR/release-notes.txt"
 readonly CONTINUITY_LOG="$PRIVATE_ROOT/daily-continuity-log.md"
 readonly SLOTS=(left middle right)
@@ -127,6 +128,41 @@ require_input_file() {
   input_real="${input:A}"
   root_real="${INPUT_ROOT:A}"
   [[ "$input_real" == "$root_real"/* ]] || die "input file must be under $root_real: $input_real"
+}
+
+story_engine() {
+  require_command python3
+  AI_WALLPAPERS_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    AI_WALLPAPERS_PRIVATE_ROOT="$PRIVATE_ROOT" \
+    AI_WALLPAPERS_INPUT_ROOT="$INPUT_ROOT" \
+    AI_WALLPAPERS_NATIVE_ROOT="$NATIVE_ROOT" \
+    AI_WALLPAPERS_STAGING_ROOT="$STAGING_ROOT" \
+    AI_WALLPAPERS_RUN_DATE="$RUN_DATE" \
+    python3 "$SCRIPT_DIR/narrative.py" "$@"
+}
+
+story_enabled() {
+  local result=0
+  story_engine enabled || result=$?
+  (( result <= 1 )) || die "could not read narrative state"
+  return "$result"
+}
+
+story_init() {
+  require_input_file "${1:-}"
+  validate_native >/dev/null
+  validate_release --exact >/dev/null
+  story_engine init "$1"
+}
+
+story_finalize() {
+  validate_native >/dev/null
+  story_engine finalize "$@"
+}
+
+story_commit() {
+  validate_release --exact >/dev/null
+  story_engine commit "$(active_notes_file)"
 }
 
 validate_configuration() {
@@ -422,6 +458,19 @@ references() {
   )
   (( ${#style_files[@]} > 0 )) || die "no style references found under: $STYLE_ROOT"
 
+  # The committed story head, including an explicit correction path, outranks
+  # local folders left behind by unpublished/failed image generation.
+  local committed_reference
+  committed_reference="$(story_engine reference)"
+  primary_dir="$(jq -r '.native_dir // empty' <<<"$committed_reference")"
+  if [[ -n "$primary_dir" ]]; then
+    primary_kind="committed-triptych"
+    for candidate in left middle right; do
+      require_file "$primary_dir/landscape-$candidate.png"
+      primary_files+=("$primary_dir/landscape-$candidate.png")
+    done
+  fi
+
   while IFS= read -r candidate; do
     local directory="${candidate:h}"
     [[ "${directory:t}" == "$TAG" ]] && continue
@@ -430,7 +479,9 @@ references() {
     fi
   done < <(find "$NATIVE_ROOT" -mindepth 2 -maxdepth 2 -type f -name landscape-left.png -print | LC_ALL=C sort -r)
 
-  if (( ${#complete_dirs[@]} > 0 )); then
+  if [[ -n "$primary_kind" ]]; then
+    : # Current committed episode already selected above.
+  elif (( ${#complete_dirs[@]} > 0 )); then
     primary_dir="${complete_dirs[1]}"
     primary_kind="triptych"
     primary_files=(
@@ -495,6 +546,9 @@ continuity_log() {
 }
 
 append_continuity_log() {
+  if story_enabled; then
+    die "narrative journal entries are committed through story-commit"
+  fi
   local entry_file="${1:-}" content date_header tmp
   [[ -n "$entry_file" ]] || die "continuity entry file is required"
   require_input_file "$entry_file"
@@ -545,6 +599,7 @@ append_continuity_log() {
 }
 
 accept_native() {
+  story_engine require-prepared >/dev/null
   local slot="${1:-}" source="${2:-}" target tmp width height peer peer_width peer_height
   [[ "$slot" == "left" || "$slot" == "middle" || "$slot" == "right" ]] || \
     die "usage: pipeline.zsh accept-native left|middle|right SOURCE_PNG"
@@ -574,6 +629,9 @@ accept_native() {
 }
 
 accept_story() {
+  if story_enabled; then
+    die "finalize the narrative episode; stage exports its approved caption and prose"
+  fi
   local source="${1:-}" story line_count tmp
   [[ -n "$source" ]] || die "usage: pipeline.zsh accept-story SOURCE_TEXT"
   require_input_file "$source"
@@ -988,6 +1046,7 @@ replace_playlist() {
 }
 
 stage() {
+  story_engine export >/dev/null
   validate_native >/dev/null
   local revision="$(active_revision)" spotify_accepted notes_file
   (( revision > 0 )) || die "no accepted Spotify playlist exists"
@@ -1027,6 +1086,10 @@ stage() {
   {
     print -r -- "$story"
     print
+    if [[ -f "$EPISODE_FILE" ]]; then
+      cat "$EPISODE_FILE"
+      print
+    fi
     print -r -- "| Left | Middle | Right |"
     print -r -- "|:---:|:---:|:---:|"
     print -r -- "| ![Left panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-left.jpg) | ![Middle panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-middle.jpg) | ![Right panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-right.jpg) |"
@@ -1069,9 +1132,14 @@ validate_release() {
   jq -e '.assets | map(.name) | sort == ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]' <<<"$release_json" >/dev/null || \
     die "release does not have exactly the three expected assets"
 
-  latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
-  [[ "$latest" == "$TAG" ]] || die "latest release is $latest, expected $TAG"
+  if [[ "${1:-}" != --exact ]]; then
+    latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+    [[ "$latest" == "$TAG" ]] || die "latest release is $latest, expected $TAG"
+  fi
   body="$(jq -r .body <<<"$release_json")"
+  if story_enabled; then
+    [[ "$body" == "$(<"$notes_file")" ]] || die "published story text differs from reviewed release notes"
+  fi
   spotify_url="$(jq -r .url "$spotify_accepted")"
   spotify_uri="$(jq -r .uri "$spotify_accepted")"
   [[ "$body" == *"$spotify_url"* ]] || die "release body lacks exact Spotify URL"
@@ -1119,7 +1187,8 @@ validate_release() {
 }
 
 completion_check() {
-  validate_release >/dev/null
+  validate_release --exact >/dev/null
+  story_engine complete >/dev/null
   require_file "$CONTINUITY_LOG"
   grep -Fqx "## $RUN_DATE" "$CONTINUITY_LOG" || \
     die "private continuity journal lacks an entry for $RUN_DATE"
@@ -1130,11 +1199,39 @@ completion_check() {
 publish() {
   stage >/dev/null
   local notes_file="$(active_notes_file)"
+  story_engine freeze "$notes_file" >/dev/null
   if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
     local release_json
     release_json="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets)"
-    jq -e '.assets | map(.name) | sort == ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]' <<<"$release_json" >/dev/null || \
-      die "existing release assets are invalid; refusing to replace them"
+    if story_enabled; then
+      jq -e '(.assets | map(.name)) as $names | (($names | length) == ($names | unique | length)) and (($names - ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"] | length) == 0)' <<<"$release_json" >/dev/null || \
+        die "existing release contains unexpected or duplicate assets"
+      local slot remote_asset http_status asset_url
+      local -a missing_assets
+      for slot in "${SLOTS[@]}"; do
+        if jq -e --arg name "landscape-$slot.jpg" '.assets | any(.name == $name)' <<<"$release_json" >/dev/null; then
+          asset_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-$slot.jpg"
+          remote_asset="$(mktemp "$INPUT_ROOT/.release-resume-$slot.XXXXXX.jpg")"
+          http_status="$(curl -L -sS -o "$remote_asset" -w '%{http_code}' "$asset_url")" || {
+            rm -f "$remote_asset"
+            die "could not verify previously uploaded panel"
+          }
+          if [[ "$http_status" != 200 || "$(sha256_file "$remote_asset")" != "$(sha256_file "$STAGING_DIR/landscape-$slot.jpg")" ]]; then
+            rm -f "$remote_asset"
+            die "previously uploaded panel differs from the frozen episode"
+          fi
+          rm -f "$remote_asset"
+        else
+          missing_assets+=("$STAGING_DIR/landscape-$slot.jpg")
+        fi
+      done
+      if (( ${#missing_assets[@]} > 0 )); then
+        gh release upload "$TAG" "${missing_assets[@]}" --repo "$GITHUB_REPOSITORY" >/dev/null
+      fi
+    else
+      jq -e '.assets | map(.name) | sort == ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]' <<<"$release_json" >/dev/null || \
+        die "existing release assets are invalid; refusing to replace them"
+    fi
     gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes_file" >/dev/null
   else
     gh release create "$TAG" \
@@ -1146,7 +1243,7 @@ publish() {
       --notes-file "$notes_file" \
       --latest >/dev/null
   fi
-  validate_release
+  validate_release --exact
 }
 
 replace_release_assets() {
@@ -1168,12 +1265,16 @@ replace_release_assets() {
     --repo "$GITHUB_REPOSITORY" \
     --clobber
   gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes_file" >/dev/null
-  validate_release
+  validate_release --exact
+  story_engine correction "$notes_file" >/dev/null
 }
 
 usage() {
   cat <<'EOF'
 Usage: producer/pipeline.zsh COMMAND [ARG]
+
+Use wallpaper-producer [--date YYYY-MM-DD] as the entrypoint. Narrative context
+and history are private author material. Future plans must never enter releases.
 
 Commands:
   context                         Print today's paths and tag as JSON.
@@ -1194,6 +1295,17 @@ Commands:
   replace-release-assets          Replace exactly the three assets on today's existing release, then validate.
   validate-release                Validate an already-published release without changing it.
   completion-check                Validate the release and today's private journal entry.
+  story-context                   Read committed state, plan, recent episodes, and pending work.
+  story-outline                   Read the full versioned plan before revising or extending it.
+  story-history NUMBER            Retrieve original evidence for an older story episode.
+  story-audit                     Validate the complete private revision chain.
+  story-journal                   Read the legacy private journal for migration/recovery.
+  story-init FILE                 Initialize from a validated existing release and baseline JSON.
+  story-baseline-correction FILE  Record an evidenced migration correction before episode 1 is prepared.
+  story-plan FILE                 Accept an explained outline revision against the current head.
+  story-prepare FILE              Save the next planned episode before generation (leased).
+  story-finalize FILE             Accept the final state and public prose after visual review (leased).
+  story-commit                    Reconcile the exact release, commit state, and append journal (leased).
 
 Judgment remains outside this script: image concepts, archive visual review, image generation,
 visual QA, story writing, Spotify search, and playlist selection.
@@ -1224,6 +1336,18 @@ main() {
     replace-release-assets) replace_release_assets "$@" ;;
     validate-release) validate_release "$@" ;;
     completion-check) completion_check "$@" ;;
+    story-guard) story_engine guard ;;
+    story-context) story_engine context ;;
+    story-outline) story_engine outline ;;
+    story-history) story_engine history "$@" ;;
+    story-audit) story_engine audit ;;
+    story-journal) continuity_log ;;
+    story-init) story_init "$@" ;;
+    story-baseline-correction) story_engine baseline-correction "$@" ;;
+    story-plan) story_engine plan "$@" ;;
+    story-prepare) story_engine prepare "$@" ;;
+    story-finalize) story_finalize "$@" ;;
+    story-commit) story_commit ;;
     -h|--help|help|"") usage ;;
     *) die "unknown command: $command" ;;
   esac

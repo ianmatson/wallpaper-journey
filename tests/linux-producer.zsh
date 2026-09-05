@@ -104,10 +104,42 @@ elif [[ "${1:-}" == api ]]; then
   print -r -- '[]'
 elif [[ "${1:-}" == auth && "${2:-}" == status ]]; then
   exit 0
+elif [[ "${1:-}" == release && "${2:-}" == create ]]; then
+  tag="$3"
+  notes=''
+  while (( $# > 0 )); do
+    if [[ "$1" == --notes-file ]]; then notes="$2"; shift 2; else shift; fi
+  done
+  mkdir -p "$FIXTURE_TEST_ROOT/published/$tag"
+  cp "$FIXTURE_TEST_ROOT/story/staging/$tag"/landscape-*.jpg "$FIXTURE_TEST_ROOT/published/$tag/"
+  jq -n --arg tag "$tag" --rawfile body "$notes" \
+    '{url:("https://github.com/ianmatson/wallpaper-journey/releases/tag/"+$tag),tagName:$tag,assets:[{name:"landscape-left.jpg"},{name:"landscape-middle.jpg"},{name:"landscape-right.jpg"}],body:$body}' \
+    >"$FIXTURE_TEST_ROOT/published/$tag/release.json"
+  if [[ "${FIXTURE_PARTIAL_UPLOAD:-0}" == 1 ]]; then
+    rm "$FIXTURE_TEST_ROOT/published/$tag/landscape-middle.jpg" "$FIXTURE_TEST_ROOT/published/$tag/landscape-right.jpg"
+    jq '.assets=[{name:"landscape-left.jpg"}]' "$FIXTURE_TEST_ROOT/published/$tag/release.json" >"$FIXTURE_TEST_ROOT/published/$tag/partial.json"
+    mv "$FIXTURE_TEST_ROOT/published/$tag/partial.json" "$FIXTURE_TEST_ROOT/published/$tag/release.json"
+    exit 73
+  fi
+elif [[ "${1:-}" == release && "${2:-}" == upload ]]; then
+  tag="$3"
+  shift 3
+  for asset in "$@"; do
+    if [[ "$asset" == *.jpg ]]; then
+      [[ ! -e "$FIXTURE_TEST_ROOT/published/$tag/${asset:t}" ]]
+      cp "$asset" "$FIXTURE_TEST_ROOT/published/$tag/"
+      jq --arg name "${asset:t}" '.assets += [{name:$name}]' "$FIXTURE_TEST_ROOT/published/$tag/release.json" >"$FIXTURE_TEST_ROOT/published/$tag/upload.json"
+      mv "$FIXTURE_TEST_ROOT/published/$tag/upload.json" "$FIXTURE_TEST_ROOT/published/$tag/release.json"
+    fi
+  done
+elif [[ "${1:-}" == release && "${2:-}" == edit ]]; then
+  exit 0
+elif [[ "${1:-}" == release && "${2:-}" == view && "${3:-}" == wall-* && "${3:-}" != wall-2099-01-02 ]]; then
+  cat "$FIXTURE_TEST_ROOT/published/$3/release.json"
 elif [[ "${1:-}" == release && "${2:-}" == view && "$*" == *'url,tagName,assets,body'* ]]; then
   print -r -- '{"url":"https://github.com/ianmatson/wallpaper-journey/releases/tag/wall-2099-01-02","tagName":"wall-2099-01-02","assets":[{"name":"landscape-left.jpg"},{"name":"landscape-middle.jpg"},{"name":"landscape-right.jpg"}],"body":"https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-left.jpg https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-middle.jpg https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-right.jpg https://open.spotify.com/playlist/fixture123 spotify:playlist:fixture123"}'
 elif [[ "${1:-}" == release && "${2:-}" == view && "$*" == *'--json tagName'* ]]; then
-  print -r -- 'wall-2099-01-02'
+  print -r -- "${FIXTURE_LATEST_TAG:-wall-2099-01-02}"
 else
   exit 2
 fi
@@ -130,7 +162,12 @@ while (( $# > 0 )); do
 done
 [[ -n "$output" ]]
 if [[ "$url" == https://github.com/*/releases/download/*/landscape-*.jpg ]]; then
-  cp "$FIXTURE_TEST_ROOT/story/staging/wall-2099-01-02/${url:t}" "$output"
+  tag="${${url:h}:t}"
+  if [[ "$tag" == wall-2099-01-02 ]]; then
+    cp "$FIXTURE_TEST_ROOT/story/staging/$tag/${url:t}" "$output"
+  else
+    cp "$FIXTURE_TEST_ROOT/published/$tag/${url:t}" "$output"
+  fi
   [[ "${FIXTURE_REMOTE_MISMATCH:-0}" == 1 ]] && print -n -r -- x >>"$output"
 elif $is_oembed; then
   print -r -- '{"title":"Test Soundtrack","provider_name":"Spotify"}' >"$output"
@@ -276,5 +313,56 @@ print -r -- 'The synthetic expedition crossed the blue horizon, left a precise s
 wrapper_run append-continuity-log "$TEST_ROOT/input/continuity.txt" >/dev/null
 wrapper_run completion-check | jq -e '.release_valid and .private_journal_entry' >/dev/null
 AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" end-run fixture-run-a | grep -qx fixture-run-a
+
+python3 "$REPOSITORY/tests/narrative-state.py" --fixture "$TEST_ROOT" baseline
+AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" story-init "$TEST_ROOT/input/baseline.json" | jq -e '.initialized' >/dev/null
+
+narrative_run() {
+  AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" --date 2099-01-05 --run-id narrative-fixture "$@"
+}
+AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" --date 2099-01-05 begin-run narrative-fixture >/dev/null
+if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" --date 2099-01-06 begin-run future-fixture >/dev/null 2>&1; then
+  print -u2 -r -- 'expected cross-date unfinished lease rejection'
+  exit 1
+fi
+AI_WALLPAPERS_RUN_DATE=2099-01-05 python3 "$REPOSITORY/tests/narrative-state.py" --fixture "$TEST_ROOT" episode
+if narrative_run accept-native middle "$TEST_ROOT/input/middle.png" >/dev/null 2>&1; then
+  print -u2 -r -- 'expected story preparation before image acceptance'
+  exit 1
+fi
+narrative_run story-prepare "$TEST_ROOT/input/episode.json" >/dev/null
+for slot in left middle right; do
+  narrative_run accept-native "$slot" "$TEST_ROOT/input/$slot.png" >/dev/null
+done
+narrative_run upscale >/dev/null
+narrative_run story-finalize "$TEST_ROOT/input/episode.json" >/dev/null
+jq '.uri="spotify:playlist:fixture456" | .url="https://open.spotify.com/playlist/fixture456"' \
+  "$TEST_ROOT/input/spotify.json" >"$TEST_ROOT/input/spotify-next.json"
+narrative_run validate-playlist "$TEST_ROOT/input/spotify-next.json" >/dev/null
+if FIXTURE_PARTIAL_UPLOAD=1 narrative_run publish >/dev/null 2>&1; then
+  print -u2 -r -- 'expected simulated interrupted upload'
+  exit 1
+fi
+narrative_run story-context | jq -e '.episode == 0 and .pending.phase == "publishing"' >/dev/null
+narrative_run publish >/dev/null
+if narrative_run completion-check >/dev/null 2>&1; then
+  print -u2 -r -- 'expected published story to require a local narrative commit'
+  exit 1
+fi
+if FIXTURE_REMOTE_MISMATCH=1 narrative_run story-commit >/dev/null 2>&1; then
+  print -u2 -r -- 'expected digest mismatch to prevent narrative advancement'
+  exit 1
+fi
+# Exact-release recovery works even when a different release is now latest.
+FIXTURE_LATEST_TAG=wall-2099-01-06 narrative_run story-commit | jq -e '.episode == 1' >/dev/null
+narrative_run story-commit | jq -e '.episode == 1' >/dev/null
+narrative_run references | jq -e '.historical_context.primary_kind == "committed-triptych" and (.historical_context.primary[0] | contains("wall-2099-01-05"))' >/dev/null
+narrative_run completion-check >/dev/null
+AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" --date 2099-01-05 end-run narrative-fixture >/dev/null
+AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" story-audit | jq -e '.story_valid and .episode == 1 and (.pending | not)' >/dev/null
+if rg -q 'Fixture season|hidden source' "$TEST_ROOT/published/wall-2099-01-05/release.json"; then
+  print -u2 -r -- 'private planning material appeared in public release'
+  exit 1
+fi
 
 print -r -- 'Linux producer fixture passed'
