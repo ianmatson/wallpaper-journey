@@ -69,6 +69,63 @@ planted promises cannot be removed. Retain older definitions when adding another
 season. The daily context filters completed material; original history stays
 retrievable. Finish any pending episode before revising its outline.
 
+## Planning rhythm
+
+The existing daily automation performs planning; no separate scheduled job is
+needed. `story-context.planning` reports due and upcoming checkpoints:
+
+| After completed episodes | Work due before the next episode is prepared |
+| --- | --- |
+| Every 7 episodes | Review the original seven-episode window for pacing, character visibility, themes, repetition, setup/payoff, and continuity. |
+| Seven episodes before an arc ends | Fully detail every episode of the following arc, including its transition. |
+| Before the final arc of a season starts | Outline the following season's theme, ending, character destinations, transition, and broad arcs. |
+
+These are episode counts, not elapsed days. Handle due work after a completed run
+or before preparing the next episode. Finish interrupted production first. Missing
+reviews block new preparation, not recovery or completion of an existing episode.
+Once due, a checkpoint survives rescheduling until its review is recorded.
+
+The plan's ordered `seasons` list makes boundaries explicit. Each entry has `id`,
+`title`, `theme`, `ending`, `character_destinations`, `transition`, and an ordered
+`arcs` list containing `{ "id": "an-existing-arc-id", "episodes": 21 }` entries.
+Every arc appears exactly once. Counts accumulate from episode 1 across seasons;
+JSON object order never determines timing. The current season's outline supplies
+the headline fields in daily context. Preserve earlier season/arc IDs and completed
+boundaries when extending the plan. Older revisions without this list remain readable.
+
+To record a review, save an input file and call `story-review FILE`:
+
+```json
+{
+  "base_revision": "current revision after any story-plan changes",
+  "checkpoint": "editorial:7",
+  "decision": "unchanged",
+  "evidence_episodes": [1, 2, 3, 4, 5, 6, 7],
+  "findings": {
+    "pacing": "Evidence and any adjustment needed.",
+    "characters": "Whether their development reached the viewer.",
+    "themes": "How choices tested the thematic question.",
+    "repetition": "Whether repeated imagery or events earned their place.",
+    "setup_payoff": "What is established and what still needs earning.",
+    "continuity": "Consequences and knowledge boundaries to preserve."
+  }
+}
+```
+
+Use the exact checkpoint ID returned by context. `decision` is `unchanged` or
+`revised`; changing the outline is not mandatory. For arc/season checkpoints, cite
+relevant committed episode numbers (0 is baseline evidence). Editorial reviews
+must cover the full reported seven-episode window. Apply any plan changes first,
+then refresh the revision and record the review. Arc reviews require complete
+episode coverage; season reviews require the next broad outline. Those outputs
+remain required in later revisions. One file records one checkpoint; refresh the
+revision between checkpoints when several coincide.
+
+Reviews append immutable revisions without advancing the story. Identical retries
+are safe, including after interruption; conflicting replacements are rejected.
+Their contents remain private. The wrapper checks timing, evidence references,
+coverage, and persistence; literary quality remains the agent's judgment.
+
 ## Commit and recovery
 
 `stage` exports approved public text. `publish` durably freezes the intended files

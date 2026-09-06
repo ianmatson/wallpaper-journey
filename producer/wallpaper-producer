@@ -139,7 +139,7 @@ case "$COMMAND" in
   doctor|help|-h|--help)
     exec "$PIPELINE" "$@"
     ;;
-  story-context|story-outline|story-history|story-audit|story-journal|story-init|story-plan|story-baseline-correction)
+  story-context|story-outline|story-history|story-audit|story-journal|story-init|story-plan|story-review|story-baseline-correction)
     exec "$PIPELINE" "$@"
     ;;
   --run-id)
@@ -150,7 +150,7 @@ case "$COMMAND" in
     shift 2
     readonly LEASED_COMMAND="${1:-}"
     case "$LEASED_COMMAND" in
-      context|preflight|references|continuity-log|append-continuity-log|accept-native|accept-story|validate-native|upscale|inspect-playlist|validate-playlist|replace-playlist|stage|publish|replace-release-assets|validate-release|completion-check|story-context|story-outline|story-history|story-audit|story-plan|story-prepare|story-finalize|story-commit)
+      context|preflight|references|continuity-log|append-continuity-log|accept-native|accept-story|validate-native|upscale|inspect-playlist|validate-playlist|replace-playlist|stage|publish|replace-release-assets|validate-release|completion-check|story-context|story-outline|story-history|story-audit|story-plan|story-review|story-prepare|story-finalize|story-commit)
         exec "$PIPELINE" "$@"
         ;;
       *) die "unsupported leased producer command: $LEASED_COMMAND" ;;

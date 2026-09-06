@@ -60,7 +60,7 @@ def episode(story):
     after["characters"]["traveler"]["belief"] = f"The shared crossing has taught lesson {number}."
     changes = [{"collection": "characters", "id": "traveler", "reason": "Help was freely offered.",
                 "expression": "The traveler accepts the other person's hand beside the opening.", "channel": "prose"}]
-    return {"base_revision": revision, "number": number, "beat": "setup" if number == 1 else "choice",
+    return {"base_revision": revision, "number": number, "beat": planned["beat"],
             "public": {"caption": "The travelers pause beside the divided channel.", "prose": PROSE},
             "after": after, "changes": changes,
             "promise_evidence": {key: "The public episode shows the offered or returned lantern."
@@ -268,6 +268,164 @@ class NarrativeTests(unittest.TestCase):
         self.story.prepare(self.put("episode", episode(self.story)))
         with self.assertRaisesRegex(narrative.StoryError, "before the first episode"):
             self.story.correct_baseline(self.put("baseline-fix", source))
+
+    def cadence_plan(self, detailed=False):
+        plan = copy.deepcopy(self.story.head()[1]["plan"])
+        for key in ("second", "third", "fourth"):
+            plan["arcs"][key] = {"objective": "Continue a synthetic journey.", "conflict": "Test shared choices.",
+                                  "resolution": "Retain the consequence of the choice."}
+            plan["beats"][key + "-beat"] = {"arc": key, "purpose": "Develop the next planned arc.", "requires": []}
+        plan["seasons"] = [{"id": "season-one", "title": "Fixture season", "theme": plan["theme"],
+                            "ending": plan["ending"], "character_destinations": plan["character_destinations"],
+                            "transition": "Continue the established journey.",
+                            "arcs": [{"id": key, "episodes": 21} for key in ("crossing", "second", "third", "fourth")]}]
+        if detailed:
+            for key in ("second", "third", "fourth"):
+                self.detail_arc(plan, key)
+        return plan
+
+    def detail_arc(self, plan, key):
+        arcs, _ = narrative.planning_calendar(plan)
+        arc = next(a for a in arcs if a["id"] == key)
+        for number in range(arc["first"], arc["last"] + 1):
+            plan["episodes"].append({"number": number, "beat": key + "-beat", "purpose": "Test persistence.",
+                                     "visible_action": "A traveler carries a changed lantern onward.",
+                                     "completes_beat": number == arc["last"], "plants": [], "pays_off": []})
+        plan["episodes"].sort(key=lambda e: e["number"])
+
+    def update_plan(self, plan):
+        return self.story.revise_plan(self.put("cadence-plan", {"base_revision": self.story.head()[0],
+                                                               "reason": "Refine the synthetic future outline.", "plan": plan}))
+
+    def review_source(self, task):
+        revision, head = self.story.head()
+        return {"base_revision": revision, "checkpoint": task["id"], "decision": "unchanged",
+                "evidence_episodes": task.get("evidence_episodes", [head["episode"]]),
+                "findings": {field: "Synthetic evidence supports retaining the planned destination."
+                             for field in ("pacing", "characters", "themes", "repetition", "setup_payoff", "continuity")}}
+
+    def service_reviews(self):
+        while self.story.context()["planning"]["due"]:
+            task = self.story.context()["planning"]["due"][0]
+            self.story.review(self.put("review", self.review_source(task)))
+
+    def advance_to(self, number):
+        while self.story.head()[1]["episode"] < number:
+            self.service_reviews()
+            self.story.commit(str(self.ready()))
+            self.next_day(skip=3)
+
+    def test_editorial_review_follows_completed_episodes_and_survives_retries(self):
+        self.update_plan(self.cadence_plan())
+        self.advance_to(6)
+        self.assertEqual(self.story.context()["planning"]["due"], [])
+        notes = self.ready()
+        self.assertEqual(self.story.context()["planning"]["due"], [])
+        with patch.object(self.story, "append_journal", side_effect=OSError("interrupted commit")):
+            with self.assertRaises(OSError):
+                self.story.commit(str(notes))
+        task = self.story.context()["planning"]["due"][0]
+        self.assertEqual(task["id"], "editorial:7")
+        with self.assertRaisesRegex(narrative.StoryError, "finish the pending episode"):
+            self.story.review(self.put("review", self.review_source(task)))
+        self.story.commit(str(notes))
+        self.next_day()
+        with self.assertRaisesRegex(narrative.StoryError, "checkpoints are due"):
+            self.story.prepare(self.put("episode", episode(self.story)))
+        source = self.review_source(task)
+        filename = self.put("review", source)
+        state = copy.deepcopy(self.story.head()[1]["state"])
+        with patch.object(self.story, "point", side_effect=OSError("interrupted review")):
+            with self.assertRaises(OSError):
+                self.story.review(filename)
+        result = self.story.review(filename)
+        self.assertEqual(self.story.review(filename)["revision"], result["revision"])
+        self.assertEqual(self.story.head()[1]["episode"], 7)
+        self.assertEqual(self.story.head()[1]["state"], state)
+        self.story.prepare(self.put("episode", episode(self.story)))
+        self.assertEqual(self.story.audit()["episode"], 7)
+
+    def test_arc_review_requires_all_next_arc_episodes_and_protects_them(self):
+        self.update_plan(self.cadence_plan())
+        self.advance_to(14)
+        due = {t["id"]: t for t in self.story.context()["planning"]["due"]}
+        self.assertEqual(set(due), {"editorial:14", "arc-detail:second"})
+        task = due["arc-detail:second"]
+        with self.assertRaisesRegex(narrative.StoryError, "fully detail"):
+            self.story.review(self.put("review", self.review_source(task)))
+        plan = copy.deepcopy(self.story.head()[1]["plan"])
+        self.detail_arc(plan, "second")
+        self.update_plan(plan)
+        self.service_reviews()
+        self.assertEqual(self.story.context()["planning"]["due"], [])
+        plan = copy.deepcopy(self.story.head()[1]["plan"])
+        plan["episodes"] = [e for e in plan["episodes"] if e["number"] != 30]
+        with self.assertRaisesRegex(narrative.StoryError, "fully detail"):
+            self.update_plan(plan)
+
+    def test_next_season_outline_is_due_before_the_final_arc(self):
+        self.update_plan(self.cadence_plan(detailed=True))
+        self.advance_to(63)
+        due = {t["id"]: t for t in self.story.context()["planning"]["due"]}
+        self.assertIn("season-outline:season-one", due)
+        task = due["season-outline:season-one"]
+        with self.assertRaisesRegex(narrative.StoryError, "next season"):
+            self.story.review(self.put("review", self.review_source(task)))
+        plan = copy.deepcopy(self.story.head()[1]["plan"])
+        plan["arcs"]["fifth"] = {"objective": "Choose a new shore.", "conflict": "Carry earlier obligations.",
+                                  "resolution": "Choose another shared direction."}
+        plan["seasons"].append({"id": "season-two", "title": "The next fixture season", "theme": "Belonging and change.",
+                                "ending": "Another earned departure.", "character_destinations": "Retain and deepen shared agency.",
+                                "transition": "Carry the changed lantern into a new place.", "arcs": [{"id": "fifth", "episodes": 21}]})
+        self.update_plan(plan)
+        self.service_reviews()
+        self.assertEqual(self.story.context()["plan"]["season"], "Fixture season")
+        upcoming = self.story.context()["planning"]["upcoming"]
+        self.assertIn({"id": "arc-detail:fifth", "kind": "arc-detail", "after_episode": 77, "target_arc": "fifth"}, upcoming)
+        self.assertEqual(self.story.audit()["episode"], 63)
+
+    def test_due_reviews_survive_rescheduling_and_cadence_cannot_disappear(self):
+        self.update_plan(self.cadence_plan())
+        self.advance_to(14)
+        plan = copy.deepcopy(self.story.head()[1]["plan"])
+        plan["seasons"][0]["arcs"][0]["episodes"] = 22
+        final = copy.deepcopy(plan["episodes"][-1])
+        final.update(number=22, pays_off=[])
+        plan["episodes"][-1]["completes_beat"] = False
+        plan["episodes"].append(final)
+        self.update_plan(plan)
+        task = next(t for t in self.story.context()["planning"]["due"] if t["kind"] == "arc-detail")
+        self.assertEqual(task["after_episode"], 14)
+        plan.pop("seasons")
+        with self.assertRaisesRegex(narrative.StoryError, "cannot be removed"):
+            self.update_plan(plan)
+
+    def test_due_arc_target_cannot_be_removed_before_its_review(self):
+        self.update_plan(self.cadence_plan())
+        self.advance_to(14)
+        revision, head = self.story.head()
+        plan = copy.deepcopy(head["plan"])
+        del plan["arcs"]["second"]
+        del plan["beats"]["second-beat"]
+        plan["seasons"][0]["arcs"] = [a for a in plan["seasons"][0]["arcs"] if a["id"] != "second"]
+        with self.assertRaisesRegex(narrative.StoryError, "target arc cannot be removed"):
+            self.update_plan(plan)
+        self.assertEqual(self.story.head()[0], revision)
+
+    def test_review_rejects_premature_or_incomplete_evidence(self):
+        self.update_plan(self.cadence_plan())
+        task = self.story.context()["planning"]["upcoming"][0]
+        with self.assertRaisesRegex(narrative.StoryError, "not due"):
+            self.story.review(self.put("review", self.review_source(task)))
+        self.advance_to(7)
+        task = self.story.context()["planning"]["due"][0]
+        source = self.review_source(task)
+        source["evidence_episodes"] = [7]
+        with self.assertRaisesRegex(narrative.StoryError, "full seven"):
+            self.story.review(self.put("review", source))
+        source["evidence_episodes"] = list(range(1, 9))
+        with self.assertRaisesRegex(narrative.StoryError, "committed episodes"):
+            self.story.review(self.put("review", source))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,12 @@ journal append. See [narrative state](NARRATIVE.md) for input shapes, plan revis
 and exact-release recovery after midnight. The existing cast and journey may evolve
 through planned events; previous members and their consequences remain in history.
 
+The same daily run also services `story-context.planning.due`: editorial review
+every seven completed episodes, full next-arc detail with seven episodes remaining,
+and the next season's broad outline before the final arc begins. `story-review`
+records completion durably; an unchanged outline is a valid outcome. Due checkpoints
+must be resolved before preparing another episode and never block interrupted-run recovery.
+
 The following sequence is retained for dates at or before the migration baseline:
 
 ```sh

@@ -1303,6 +1303,7 @@ Commands:
   story-init FILE                 Initialize from a validated existing release and baseline JSON.
   story-baseline-correction FILE  Record an evidenced migration correction before episode 1 is prepared.
   story-plan FILE                 Accept an explained outline revision against the current head.
+  story-review FILE               Record a due editorial, next-arc, or next-season review.
   story-prepare FILE              Save the next planned episode before generation (leased).
   story-finalize FILE             Accept the final state and public prose after visual review (leased).
   story-commit                    Reconcile the exact release, commit state, and append journal (leased).
@@ -1345,6 +1346,7 @@ main() {
     story-init) story_init "$@" ;;
     story-baseline-correction) story_engine baseline-correction "$@" ;;
     story-plan) story_engine plan "$@" ;;
+    story-review) story_engine review "$@" ;;
     story-prepare) story_engine prepare "$@" ;;
     story-finalize) story_finalize "$@" ;;
     story-commit) story_commit ;;

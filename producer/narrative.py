@@ -153,6 +153,39 @@ def validate_plan(plan, completed=()):
         for key in episode["pays_off"]:
             require(promises[key]["target_beat"] == episode["beat"], "scheduled payoff has the wrong destination")
     require(numbers == sorted(set(numbers)), "planned episode numbers must be unique and ordered")
+    arcs, _ = planning_calendar(plan)
+    if arcs:
+        for episode in episodes:
+            arc = next((a for a in arcs if a["first"] <= episode["number"] <= a["last"]), None)
+            require(arc is not None and beats[episode["beat"]]["arc"] == arc["id"],
+                    "detailed episode disagrees with the ordered arc schedule")
+
+
+def planning_calendar(plan):
+    """Derive episode boundaries from explicit order, never JSON object order."""
+    if "seasons" not in plan:
+        return [], []  # Older immutable revisions remain readable.
+    require(isinstance(plan["seasons"], list) and plan["seasons"], "seasons must be an ordered list")
+    arcs, seasons, seen_arcs, seen_seasons, first = [], [], set(), set(), 1
+    for item in plan["seasons"]:
+        key = item.get("id")
+        require(isinstance(key, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", key), "invalid season ID")
+        require(key not in seen_seasons, "duplicate season ID")
+        seen_seasons.add(key)
+        for field in ("title", "theme", "ending", "character_destinations", "transition"):
+            text(item.get(field), f"season {field}")
+        require(isinstance(item.get("arcs"), list) and item["arcs"], "season requires ordered arcs")
+        start = first
+        for arc in item["arcs"]:
+            arc_id, count = arc.get("id"), arc.get("episodes")
+            require(arc_id in plan["arcs"] and arc_id not in seen_arcs, "unknown or repeated scheduled arc")
+            require(type(count) is int and count > 0, "arc episode target must be positive")
+            seen_arcs.add(arc_id)
+            arcs.append({"id": arc_id, "season": key, "first": first, "last": first + count - 1})
+            first += count
+        seasons.append({"id": key, "first": start, "last": first - 1, "outline": item})
+    require(seen_arcs == set(plan["arcs"]), "every arc must appear once in the season schedule")
+    return arcs, seasons
 
 
 class Story:
@@ -255,6 +288,28 @@ class Story:
         text(source.get("reason"), "plan revision reason")
         plan = source["plan"]
         validate_plan(plan, old["completed_beats"])
+        old_arcs, _ = planning_calendar(old["plan"])
+        new_arcs, new_seasons = planning_calendar(plan)
+        if old_arcs:
+            require(new_arcs, "planning cadence cannot be removed")
+            for task in self.planning_status(old)["due"]:
+                if task["kind"] == "arc-detail":
+                    require(any(a["id"] == task["target_arc"] for a in new_arcs),
+                            "a due planning checkpoint's target arc cannot be removed")
+                elif task["kind"] == "season-outline":
+                    require(any(s["id"] == task["season"] for s in new_seasons),
+                            "a due planning checkpoint's season cannot be removed")
+            for arc in old_arcs:
+                if arc["first"] <= old["episode"]:
+                    replacement = next((a for a in new_arcs if a["id"] == arc["id"]), None)
+                    if arc["last"] <= old["episode"]:
+                        require(replacement == arc, "completed arc boundaries must be preserved")
+                    else:
+                        require(replacement is not None and replacement["first"] == arc["first"] and
+                                replacement["season"] == arc["season"] and replacement["last"] >= old["episode"],
+                                "started arc order must be preserved")
+            for review in old.get("planning_reviews", {}).values():
+                self.check_planning_output(review["task"], plan)
         for beat in old["completed_beats"]:
             require(plan["beats"][beat] == old["plan"]["beats"][beat],
                     "established beat definitions cannot be rewritten")
@@ -276,11 +331,86 @@ class Story:
         require(all(incoming.get(n) == e for n, e in previous.items()),
                 "completed episode plans cannot be rewritten")
         new = copy.deepcopy(old)
+        new["planning_obligations"] = self.planning_status(old)["due"]
         new.update(kind="plan", parent=revision, plan=plan,
                    revision_reason=source["reason"], promise_impacts=source.get("promise_impacts", {}))
         new_revision = self.save_revision(new)
         self.point(new_revision)
         return {"revision": new_revision, "episode": old["episode"]}
+
+    def planning_status(self, head):
+        arcs, seasons = planning_calendar(head["plan"])
+        if not arcs:
+            return {"enabled": False, "due": [], "upcoming": []}
+        number = head["episode"]
+        reviewed = head.get("planning_reviews", {})
+        tasks = []
+        for boundary in range(7, (number // 7 + 2) * 7, 7):
+            tasks.append({"id": f"editorial:{boundary}", "kind": "editorial", "after_episode": boundary,
+                          "evidence_episodes": list(range(boundary - 6, boundary + 1))})
+        for previous, target in zip(arcs, arcs[1:]):
+            tasks.append({"id": "arc-detail:" + target["id"], "kind": "arc-detail",
+                          "after_episode": max(previous["first"] - 1, previous["last"] - 7),
+                          "target_arc": target["id"]})
+        for season in seasons:
+            final_arc = next(a for a in reversed(arcs) if a["season"] == season["id"])
+            tasks.append({"id": "season-outline:" + season["id"], "kind": "season-outline",
+                          "after_episode": final_arc["first"] - 1, "season": season["id"]})
+        by_id = {t["id"]: t for t in tasks}
+        # Once due, a checkpoint survives an outline revision that moves its date.
+        by_id.update({t["id"]: t for t in head.get("planning_obligations", [])})
+        remaining = sorted((t for key, t in by_id.items() if key not in reviewed),
+                           key=lambda t: (t["after_episode"], t["id"]))
+        return {"enabled": True, "due": [t for t in remaining if t["after_episode"] <= number],
+                "upcoming": [t for t in remaining if t["after_episode"] > number][:5],
+                "completed_reviews": len(reviewed)}
+
+    def check_planning_output(self, task, plan):
+        arcs, seasons = planning_calendar(plan)
+        if task["kind"] == "arc-detail":
+            arc = next((a for a in arcs if a["id"] == task["target_arc"]), None)
+            require(arc is not None, "a due or reviewed arc cannot be removed")
+            episodes = {e["number"]: e for e in plan["episodes"]}
+            require(all(n in episodes and plan["beats"][episodes[n]["beat"]]["arc"] == arc["id"]
+                        for n in range(arc["first"], arc["last"] + 1)),
+                    "fully detail the next arc through story-plan before recording its planning review")
+        elif task["kind"] == "season-outline":
+            index = next((i for i, s in enumerate(seasons) if s["id"] == task["season"]), None)
+            require(index is not None and index + 1 < len(seasons),
+                    "add the next season's broad outline and ordered arcs before recording its review")
+
+    def review(self, filename):
+        revision, head = self.head()
+        source = self.input(filename)
+        checkpoint = source.get("checkpoint")
+        source_digest = digest(encoded(source))
+        previous = head.get("planning_reviews", {}).get(checkpoint)
+        if previous:
+            require(previous["source_digest"] == source_digest, "planning review is already recorded with different content")
+            return {"review_recorded": True, "checkpoint": checkpoint, "revision": revision}
+        require(not self.pending(), "finish the pending episode before recording a planning review")
+        require(source.get("base_revision") == revision, "stale planning review revision")
+        task = next((t for t in self.planning_status(head)["due"] if t["id"] == checkpoint), None)
+        require(task is not None, "planning checkpoint is not due")
+        require(source.get("decision") in ("unchanged", "revised"), "review decision must be unchanged or revised")
+        for field in ("pacing", "characters", "themes", "repetition", "setup_payoff", "continuity"):
+            text(source.get("findings", {}).get(field), f"planning review: {field}")
+        evidence = source.get("evidence_episodes")
+        require(isinstance(evidence, list) and all(type(n) is int and 0 <= n <= head["episode"] for n in evidence),
+                "review evidence must refer to committed episodes")
+        if task["kind"] == "editorial":
+            require(set(task["evidence_episodes"]) <= set(evidence), "review the full seven-episode window")
+        else:
+            require(evidence, "planning review needs established context evidence; episode 0 is the baseline")
+        self.check_planning_output(task, head["plan"])
+        new = copy.deepcopy(head)
+        new.update(kind="planning-review", parent=revision)
+        new.setdefault("planning_reviews", {})[checkpoint] = {
+            "task": task, "at_episode": head["episode"], "source_digest": source_digest, "source": source}
+        new["planning_obligations"] = [t for t in self.planning_status(head)["due"] if t["id"] != checkpoint]
+        new_revision = self.save_revision(new)
+        self.point(new_revision)
+        return {"review_recorded": True, "checkpoint": checkpoint, "revision": new_revision}
 
     def correct_baseline(self, filename):
         revision, old = self.head()
@@ -369,6 +499,9 @@ class Story:
         require(self.run, "story preparation requires the owning run")
         self.guard()
         revision, old = self.head()
+        if not final and not self.pending():
+            require(not self.planning_status(old)["due"],
+                    "planning checkpoints are due; finish story-plan/story-review before preparing the next episode")
         source = self.input(filename)
         self.validate_episode(source, revision, old, final)
         pending = self.pending()
@@ -472,6 +605,7 @@ class Story:
                                    "source_digest": digest(encoded(source)), "manifest": pending["manifest"],
                                    "changes": source["changes"], "purpose": source["purpose"], "review": source["review"]}
             new["last_episode"]["promise_evidence"] = source.get("promise_evidence", {})
+            new["planning_obligations"] = self.planning_status(new)["due"]
             revision = self.save_revision(new)
             self.point(revision)
         # If interrupted here, the same pending source repairs the journal on retry.
@@ -519,6 +653,12 @@ class Story:
         upcoming = [e for e in head["plan"]["episodes"] if e["number"] >= next_number][:5]
         plan = copy.deepcopy(head["plan"])
         plan["episodes"] = upcoming
+        _, seasons = planning_calendar(head["plan"])
+        active = next((s for s in seasons if s["first"] <= next_number <= s["last"]), None)
+        if active:
+            outline = active["outline"]
+            plan.update(season=outline["title"], theme=outline["theme"], ending=outline["ending"],
+                        character_destinations=outline["character_destinations"], transition=outline["transition"])
         remaining = {key for key in plan["beats"] if key not in head["completed_beats"]}
         needed = remaining | {b for key in remaining for b in plan["beats"][key]["requires"]}
         plan["beats"] = {key: value for key, value in plan["beats"].items() if key in needed}
@@ -546,6 +686,7 @@ class Story:
                 "last_episode": head["last_episode"], "recent_episodes": recent,
                 "retrieve_episode_numbers": sorted(relevant), "pending": self.pending(),
                 "open_runs": self.open_runs(),
+                "planning": self.planning_status(head),
                 "instruction": "Private author context. Read story-history NUMBER for older evidence needed today. Future plans are not established events."}
 
     def history(self, number):
@@ -597,6 +738,7 @@ def main():
                     "prepare the story episode before accepting new images")
         return 0
     commands = {"init": story.initialize, "plan": story.revise_plan, "baseline-correction": story.correct_baseline,
+                "review": story.review,
                 "prepare": story.prepare, "finalize": lambda f: story.prepare(f, final=True),
                 "context": story.context, "history": story.history, "audit": story.audit,
                 "export": story.export_public, "freeze": story.freeze, "commit": story.commit,

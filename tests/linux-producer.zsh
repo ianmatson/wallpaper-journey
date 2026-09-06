@@ -8,6 +8,7 @@ readonly WRAPPER="$REPOSITORY/producer/wallpaper-producer"
 readonly TEST_ROOT="$(mktemp -d -t wallpaper-producer-test.XXXXXX)"
 trap 'rm -rf -- "$TEST_ROOT"' EXIT
 
+command -v grep >/dev/null
 if grep -Fq 'gh release delete' "$PIPELINE"; then
   print -u2 -r -- 'producer must preserve published GitHub Releases and tags'
   exit 1
@@ -360,9 +361,64 @@ narrative_run references | jq -e '.historical_context.primary_kind == "committed
 narrative_run completion-check >/dev/null
 AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" --date 2099-01-05 end-run narrative-fixture >/dev/null
 AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" story-audit | jq -e '.story_valid and .episode == 1 and (.pending | not)' >/dev/null
-if rg -q 'Fixture season|hidden source' "$TEST_ROOT/published/wall-2099-01-05/release.json"; then
+if grep -qE 'Fixture season|hidden source' "$TEST_ROOT/published/wall-2099-01-05/release.json"; then
   print -u2 -r -- 'private planning material appeared in public release'
   exit 1
 fi
+
+admin_story() {
+  AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" "$@"
+}
+admin_story story-outline >"$TEST_ROOT/input/cadence-plan.json"
+python3 - "$TEST_ROOT/input/cadence-plan.json" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); source=json.loads(path.read_text()); plan=source['plan']
+plan['arcs']['fixture-next']={'objective':'Continue the shared route.','conflict':'Make another shared choice.','resolution':'Retain a visible consequence.'}
+plan['beats']['fixture-next']={'arc':'fixture-next','purpose':'Develop a second synthetic arc.','requires':['choice']}
+plan['seasons']=[{'id':'fixture-season','title':plan['season'],'theme':plan['theme'],'ending':plan['ending'],
+                 'character_destinations':plan['character_destinations'],'transition':'Continue the established synthetic journey.',
+                 'arcs':[{'id':'crossing','episodes':2},{'id':'fixture-next','episodes':2}]}]
+source['reason']='Enable a short synthetic cadence for wrapper integration.'
+path.write_text(json.dumps(source))
+PY
+admin_story story-plan "$TEST_ROOT/input/cadence-plan.json" >/dev/null
+admin_story story-context >"$TEST_ROOT/input/cadence-context.json"
+python3 - "$TEST_ROOT/input" <<'PY'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1]); context=json.loads((root/'cadence-context.json').read_text())
+assert context['planning']['due'][0]['id']=='arc-detail:fixture-next'
+source={'base_revision':context['revision'],'checkpoint':'arc-detail:fixture-next','decision':'revised','evidence_episodes':[1],
+        'findings':{key:'The synthetic episode supports the planned shared destination.' for key in ('pacing','characters','themes','repetition','setup_payoff','continuity')}}
+(root/'cadence-review.json').write_text(json.dumps(source))
+PY
+if admin_story story-review "$TEST_ROOT/input/cadence-review.json" >/dev/null 2>&1; then
+  print -u2 -r -- 'expected incomplete next arc to prevent planning review completion'
+  exit 1
+fi
+admin_story story-outline >"$TEST_ROOT/input/cadence-plan.json"
+python3 - "$TEST_ROOT/input/cadence-plan.json" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); source=json.loads(path.read_text())
+for number in (3,4):
+    source['plan']['episodes'].append({'number':number,'beat':'fixture-next','purpose':'Retain the shared choice.',
+                                      'visible_action':'The travelers carry the lantern onward.','completes_beat':number==4,'plants':[],'pays_off':[]})
+source['reason']='Fully detail the next synthetic arc.'
+path.write_text(json.dumps(source))
+PY
+admin_story story-plan "$TEST_ROOT/input/cadence-plan.json" >/dev/null
+admin_story story-context >"$TEST_ROOT/input/cadence-context.json"
+python3 - "$TEST_ROOT/input" <<'PY'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1]); context=json.loads((root/'cadence-context.json').read_text())
+path=root/'cadence-review.json'; source=json.loads(path.read_text()); source['base_revision']=context['revision']; path.write_text(json.dumps(source))
+PY
+admin_story story-review "$TEST_ROOT/input/cadence-review.json" | jq -e '.review_recorded' >/dev/null
+admin_story story-review "$TEST_ROOT/input/cadence-review.json" | jq -e '.review_recorded' >/dev/null
+admin_story story-context | jq -e '.episode == 1 and .planning.completed_reviews == 1 and (.planning.due | length == 0)' >/dev/null
+admin_story story-audit | jq -e '.story_valid and .episode == 1 and (.pending | not)' >/dev/null
 
 print -r -- 'Linux producer fixture passed'
