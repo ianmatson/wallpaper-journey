@@ -1,0 +1,162 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+umask 077
+
+readonly SCRIPT_DIR="${0:A:h}"
+readonly REPOSITORY="${SCRIPT_DIR:h}"
+readonly DEFAULT_WORKSPACE="${REPOSITORY:h}"
+readonly ENV_FILE="${AI_WALLPAPERS_ENV_FILE:-$DEFAULT_WORKSPACE/config/wallpaper.env}"
+
+die() {
+  print -u2 -r -- "ERROR: $*"
+  exit 1
+}
+
+[[ -f "$ENV_FILE" ]] || die "configuration file is missing: $ENV_FILE"
+[[ ! -L "$ENV_FILE" ]] || die "configuration file must not be a symlink: $ENV_FILE"
+
+if [[ "$OSTYPE" == linux* ]]; then
+  [[ "$(stat -c %u "$ENV_FILE")" == "$(id -u)" ]] || die "configuration file is not owned by the current user"
+  [[ "$(stat -c %a "$ENV_FILE")" == "600" ]] || die "configuration file must have mode 0600: $ENV_FILE"
+fi
+
+set -a
+source "$ENV_FILE"
+set +a
+
+# Recovery uses the original episode date even after midnight.
+if [[ "${1:-}" == --date ]]; then
+  export AI_WALLPAPERS_RUN_DATE="${2:-}"
+  shift 2
+fi
+
+readonly PIPELINE="$REPOSITORY/producer/pipeline.zsh"
+[[ -x "$PIPELINE" ]] || die "producer pipeline is not executable: $PIPELINE"
+readonly WORKSPACE_ROOT="${AI_WALLPAPERS_WORKSPACE_ROOT:-$DEFAULT_WORKSPACE}"
+readonly GITHUB_TOKEN_FILE="${AI_WALLPAPERS_GITHUB_TOKEN_FILE:-$WORKSPACE_ROOT/config/github-token}"
+readonly CONTROL_DIR="${AI_WALLPAPERS_CONTROL_DIR:-$WORKSPACE_ROOT/control/producer}"
+readonly RUN_DATE="${AI_WALLPAPERS_RUN_DATE:-$(TZ="${AI_WALLPAPERS_TIME_ZONE:-America/Chicago}" date +%F)}"
+[[ "$WORKSPACE_ROOT" == /* && "$CONTROL_DIR" == /* && "$GITHUB_TOKEN_FILE" == /* ]] || \
+  die "workspace, control directory, and GitHub token file must be absolute"
+[[ "${GITHUB_TOKEN_FILE:A}" == "${WORKSPACE_ROOT:A}"/* ]] || die "GitHub token file must be inside the workspace"
+[[ "${GITHUB_TOKEN_FILE:A}" != "${REPOSITORY:A}" && "${GITHUB_TOKEN_FILE:A}" != "${REPOSITORY:A}"/* ]] || \
+  die "GitHub token file must remain outside the public repository"
+[[ -f "$GITHUB_TOKEN_FILE" ]] || die "GitHub token file is missing: $GITHUB_TOKEN_FILE"
+[[ ! -L "$GITHUB_TOKEN_FILE" ]] || die "GitHub token file must not be a symlink: $GITHUB_TOKEN_FILE"
+if [[ "$OSTYPE" == linux* ]]; then
+  [[ "$(stat -c %u "$GITHUB_TOKEN_FILE")" == "$(id -u)" ]] || die "GitHub token file is not owned by the current user"
+  [[ "$(stat -c %a "$GITHUB_TOKEN_FILE")" == "600" ]] || die "GitHub token file must have mode 0600"
+fi
+readonly GITHUB_TOKEN="$(<"$GITHUB_TOKEN_FILE")"
+[[ "$GITHUB_TOKEN" == github_pat_* ]] || die "GitHub token file does not contain a fine-grained personal access token"
+export GH_TOKEN="$GITHUB_TOKEN"
+[[ "${CONTROL_DIR:A}" == "${WORKSPACE_ROOT:A}"/* ]] || die "control directory must be inside the workspace"
+[[ "$RUN_DATE" =~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ]] || die "invalid run date: $RUN_DATE"
+if date -d "$RUN_DATE" +%F >/dev/null 2>&1; then
+  [[ "$(date -d "$RUN_DATE" +%F)" == "$RUN_DATE" ]] || die "invalid calendar date: $RUN_DATE"
+elif date -j -f %F "$RUN_DATE" +%F >/dev/null 2>&1; then
+  [[ "$(date -j -f %F "$RUN_DATE" +%F)" == "$RUN_DATE" ]] || die "invalid calendar date: $RUN_DATE"
+else
+  die "could not validate run date: $RUN_DATE"
+fi
+"$PIPELINE" context >/dev/null
+[[ ! -L "$CONTROL_DIR" ]] || die "control directory must not be a symlink: $CONTROL_DIR"
+mkdir -p -m 700 "$CONTROL_DIR"
+chmod 700 "$CONTROL_DIR"
+if [[ "$OSTYPE" == linux* ]]; then
+  [[ "$(stat -c %u "$CONTROL_DIR")" == "$(id -u)" ]] || die "control directory is not owned by the current user"
+  [[ "$(stat -c %a "$CONTROL_DIR")" == "700" ]] || die "control directory must have mode 0700"
+fi
+readonly LEASE_FILE="$CONTROL_DIR/wallpaper-producer-$RUN_DATE.lease"
+exec 9<"$CONTROL_DIR"
+flock -n 9 || die "another wallpaper producer invocation is already running"
+
+valid_run_id() {
+  [[ "$1" =~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$' ]]
+}
+
+begin_run() {
+  local requested="${1:-}" run_id tmp
+  "$PIPELINE" story-guard >/dev/null
+  [[ ! -L "$LEASE_FILE" ]] || die "run lease must not be a symlink: $LEASE_FILE"
+  if [[ -e "$LEASE_FILE" ]]; then
+    run_id="$(<"$LEASE_FILE")"
+    if [[ -n "$requested" && "$requested" == "$run_id" ]]; then
+      print -r -- "$run_id"
+      return
+    fi
+    die "a run lease already exists for $RUN_DATE: $run_id"
+  fi
+  if [[ -n "$requested" ]]; then
+    run_id="$requested"
+  elif command -v uuidgen >/dev/null 2>&1; then
+    run_id="wall-$RUN_DATE-$(uuidgen)"
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    run_id="wall-$RUN_DATE-$(</proc/sys/kernel/random/uuid)"
+  else
+    die "cannot generate a run id; pass one explicitly"
+  fi
+  valid_run_id "$run_id" || die "invalid run id"
+  tmp="$(mktemp "${LEASE_FILE:h}/.wallpaper-producer-lease.XXXXXX")"
+  print -r -- "$run_id" >"$tmp"
+  chmod 600 "$tmp"
+  ln "$tmp" "$LEASE_FILE" || {
+    rm -f "$tmp"
+    die "another run acquired the lease for $RUN_DATE"
+  }
+  rm -f "$tmp"
+  print -r -- "$run_id"
+}
+
+end_run() {
+  local run_id="${1:-}"
+  valid_run_id "$run_id" || die "usage: wallpaper-producer end-run RUN_ID"
+  [[ -f "$LEASE_FILE" ]] || die "no run lease exists for $RUN_DATE"
+  [[ ! -L "$LEASE_FILE" ]] || die "run lease must not be a symlink: $LEASE_FILE"
+  [[ "$(<"$LEASE_FILE")" == "$run_id" ]] || die "run id does not own the $RUN_DATE lease"
+  "$PIPELINE" completion-check >/dev/null
+  rm -f "$LEASE_FILE"
+  print -r -- "$run_id"
+}
+
+require_run_lease() {
+  local run_id="$1"
+  valid_run_id "$run_id" || die "invalid or missing run id"
+  [[ -f "$LEASE_FILE" ]] || die "no run lease exists for $RUN_DATE; call begin-run first"
+  [[ ! -L "$LEASE_FILE" ]] || die "run lease must not be a symlink: $LEASE_FILE"
+  [[ "$(<"$LEASE_FILE")" == "$run_id" ]] || die "run id does not own the $RUN_DATE lease"
+}
+
+readonly COMMAND="${1:-help}"
+case "$COMMAND" in
+  begin-run)
+    begin_run "${2:-}"
+    ;;
+  end-run)
+    end_run "${2:-}"
+    ;;
+  doctor|help|-h|--help)
+    exec "$PIPELINE" "$@"
+    ;;
+  story-context|story-outline|story-history|story-audit|story-journal|story-init|story-plan|story-review|story-baseline-correction)
+    exec "$PIPELINE" "$@"
+    ;;
+  --run-id)
+    readonly RUN_ID="${2:-}"
+    require_run_lease "$RUN_ID"
+    export AI_WALLPAPERS_RUN_ID="$RUN_ID"
+    "$PIPELINE" story-guard >/dev/null
+    shift 2
+    readonly LEASED_COMMAND="${1:-}"
+    case "$LEASED_COMMAND" in
+      context|preflight|references|continuity-log|append-continuity-log|accept-native|accept-story|validate-native|upscale|inspect-playlist|validate-playlist|replace-playlist|stage|publish|replace-release-assets|validate-release|completion-check|story-context|story-outline|story-history|story-audit|story-plan|story-review|story-prepare|story-finalize|story-commit)
+        exec "$PIPELINE" "$@"
+        ;;
+      *) die "unsupported leased producer command: $LEASED_COMMAND" ;;
+    esac
+    ;;
+  *)
+    die "use begin-run, end-run, doctor, help, or --run-id RUN_ID COMMAND"
+    ;;
+esac

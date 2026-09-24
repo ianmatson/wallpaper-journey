@@ -565,7 +565,7 @@ function Show-UpdateNotice {
     $choice = (New-Object -ComObject WScript.Shell).Popup(
       "A new Wallpaper Journey version is available. Open the README to see how to update?",
       60, "Wallpaper Journey", 4 + 64)
-    if ($choice -eq 6) { Start-Process "$Repo#updating--windows" }
+    if ($choice -eq 6) { Start-Process "$Repo#windows" }
   } catch { }
 }
 
