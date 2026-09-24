@@ -71,25 +71,45 @@ zsh ~/WallpaperJourney/wallpaper.sh --uninstall
 
 ### Windows
 
-Run in PowerShell:
+Install or update without admin rights (Windows 8 or later):
+
+```powershell
+irm https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer/install.ps1 | iex
+```
+
+<details>
+<summary>Manual installation</summary>
 
 ```powershell
 $Base = "https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer"
 $Dir = "$env:USERPROFILE\WallpaperJourney"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-Invoke-WebRequest "$Base/wallpaper.ps1" -OutFile "$Dir\wallpaper.ps1" -UseBasicParsing
 Invoke-WebRequest "$Base/install.ps1" -OutFile "$Dir\install.ps1" -UseBasicParsing
+# Read it, then run it. It fetches wallpaper.ps1 and registers both tasks.
 powershell -ExecutionPolicy Bypass -File "$Dir\install.ps1"
 ```
 
-This registers the `WallpaperJourney` scheduled task and runs it immediately.
-Windows uses one image across all monitors, defaulting to the middle panel. Edit
-`$File` in the downloaded `wallpaper.ps1` to choose another panel.
+</details>
 
-A detected manual wallpaper change uninstalls the subscriber at its next poll.
-To uninstall explicitly:
+Panels follow your left-to-right arrangement in **Settings → System → Display**,
+using the same table as macOS. A watcher task reapplies cached images within
+seconds after monitor or virtual desktop changes, without network requests. It
+keeps seven days of images locally. A manual wallpaper change on any monitor,
+including a solid colour, opts you out and uninstalls the subscriber.
+
+When a newer Windows subscriber is available, the next check asks once whether
+to open this README; rerun the installation command to update. Versions from
+before September 2026 use one image on every monitor and cannot announce
+updates, so rerun it once to move to per-monitor panels.
 
 ```powershell
+# Check the installation (logs: %LOCALAPPDATA%\WallpaperJourney\wallpaper.log)
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\WallpaperJourney\wallpaper.ps1" -Status
+
+# Check for a new release now
+Start-ScheduledTask -TaskName WallpaperJourney
+
+# Uninstall explicitly
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\WallpaperJourney\wallpaper.ps1" -Uninstall
 ```
 
