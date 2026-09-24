@@ -7,7 +7,7 @@
 
 set -u
 
-VERSION=3   # bump on any consumer change, and keep consumer/VERSION in the repo equal
+VERSION=3   # bump on any macOS consumer change, and keep consumer/VERSION in the repo equal (Windows has VERSION-windows)
 
 # Don't inherit whatever PATH the caller had. Several steps here fail quietly
 # when a tool is missing — a lost osascript reads as "no Spaces reference

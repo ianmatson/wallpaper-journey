@@ -127,26 +127,61 @@ action and select the wallpaper you want it to change each day.
 In PowerShell (no admin needed):
 
 ```powershell
+irm https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer/install.ps1 | iex
+```
+
+That installs or updates Wallpaper Journey, downloads today's triptych, and
+watches for monitor changes. If you prefer to inspect each step, the equivalent
+manual installation is:
+
+<details>
+<summary>Manual installation</summary>
+
+```powershell
 $Base = "https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer"
 $Dir  = "$env:USERPROFILE\WallpaperJourney"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-iwr "$Base/wallpaper.ps1" -OutFile "$Dir\wallpaper.ps1"
-iwr "$Base/install.ps1"   -OutFile "$Dir\install.ps1"
-
-# Optional: edit the $File line in wallpaper.ps1 to pick left/middle/right.
+iwr "$Base/install.ps1" -OutFile "$Dir\install.ps1"
+# Read it, then run it. It fetches wallpaper.ps1 and registers both tasks.
 powershell -ExecutionPolicy Bypass -File "$Dir\install.ps1"
 ```
 
-Creates a `WallpaperJourney` scheduled task that checks for a new release at
-04:00, 08:00, 12:00, 16:00, and 20:00 (and at logon), and sets the wallpaper
-once straight away. Windows gets a single image on all monitors
-(`landscape-middle.jpg` by default).
+</details>
+
+Creates two scheduled tasks. `WallpaperJourney` checks for a new release at
+04:00, 08:00, 12:00, 16:00, and 20:00 (and at logon). `WallpaperJourneyWatcher`
+runs from logon and reapplies the cached images within seconds when you add,
+remove, or rearrange a monitor, or switch virtual desktops; it makes no network
+requests. As on macOS, all three images are downloaded and one goes on each
+monitor, matching your left-to-right arrangement in Settings → System →
+Display, using the same table as macOS above. Requires Windows 8 or later.
+
+To download and set today's wallpaper immediately instead of waiting for the
+next poll:
+
+```powershell
+Start-ScheduledTask -TaskName WallpaperJourney
+```
+
+### Updating — Windows
+
+Rerun the install command above; it replaces the script and both tasks in
+place. When the repo carries a newer Windows consumer version, the next poll
+asks once per version whether to open this README — nothing ever updates
+itself, for the same reason as on macOS. Check what you have with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\WallpaperJourney\wallpaper.ps1" -Status
+```
+
+Versions from before September 2026 cannot announce updates and set one image
+on every monitor. Rerun the install command once to move to per-monitor panels.
 
 ### Uninstall — Windows
 
-As on macOS, **just set your own wallpaper** — the next poll notices, uninstalls
-the task, removes Wallpaper Journey's files, and shows a notification. To
-uninstall by hand instead:
+As on macOS, **just set your own wallpaper** — the watcher notices within a few
+seconds, removes both tasks and Wallpaper Journey's files, and shows a
+notification. To uninstall by hand instead:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\WallpaperJourney\wallpaper.ps1" -Uninstall
@@ -166,31 +201,30 @@ DIR="$HOME/WallpaperJourney"        # macOS
 $Dir = "$env:USERPROFILE\WallpaperJourney"   # Windows
 ```
 
-On macOS the scripts and images live in the same folder, so if you move `DIR`
-you must move `wallpaper.sh` and `wallpaper-watcher.js` there too and update the
-matching paths in both wallpaper plists under `~/Library/LaunchAgents`. On
-Windows the script path is set separately in `install.ps1`, so `$Dir` only
-affects the images.
-
-**Which image (Windows only).** Edit `$File` in `wallpaper.ps1`. macOS picks
-images automatically from your monitor layout.
+On both platforms the scripts and images live in the same folder, so if you
+move it you must move the scripts there too: on macOS, `wallpaper.sh` and
+`wallpaper-watcher.js`, plus the matching paths in both wallpaper plists under
+`~/Library/LaunchAgents`; on Windows, `wallpaper.ps1`, plus `$Dir` in
+`install.ps1` before you run it. Rerunning the one-line installer resets these
+edits.
 
 ## Notes
 
 - Portrait monitors get a centre-cropped version of their slot's image
-  automatically (macOS "Fill Screen" scaling).
+  automatically ("Fill Screen" on macOS, "Fill" on Windows).
 - The iPhone and iPad shortcut updates the wallpaper selected in its **Set
   Wallpaper Photo** action. Select it again if importing the shortcut does not
   preserve that choice.
-- macOS keeps the last 7 days of images (change `KEEP=7`); Windows keeps one file.
+- Both platforms keep the last 7 days of images (change `KEEP=7` in
+  `wallpaper.sh` or `$Keep = 7` in `wallpaper.ps1`).
 - A poll that finds nothing new costs one redirect request on either platform
   and exits without downloading an image or touching your wallpaper, so the
   extra polls are close to free. To change the schedule, edit the
   `StartCalendarInterval` entries in
   `~/Library/LaunchAgents/com.ianmatson.wallpaper.plist` on macOS, or the
   trigger hours in `install.ps1` and rerun it on Windows.
-- The macOS system-event watcher only reads cached files. Monitor, wake, and
-  Space events never make network requests.
+- The system-event watchers only read cached files. Monitor, wake, Space, and
+  virtual desktop events never make network requests.
 - Setting your own wallpaper on **any** screen counts as opting out on macOS —
   Wallpaper Journey uninstalls itself entirely rather than fight you for the
   other screens at the next poll.
@@ -200,14 +234,19 @@ images automatically from your monitor layout.
   desktop set up before the rename would go blank. Uninstalling removes the
   symlink. On Windows the old `DailyWallpaper` scheduled task is unregistered
   when you rerun `install.ps1`.
-- macOS notices an opt-out within seconds, because the watcher checks the
-  wallpaper store timestamp every two seconds. Windows has no equivalent
-  resident process, so it notices at the next scheduled poll — up to four hours
-  later.
-- The opt-out detection compares the current wallpaper path against Wallpaper Journey's
-  own file: `~/WallpaperJourney` on macOS, `current.jpg` on Windows. If you keep old
-  macOS Spaces that still show a wallpaper from before you subscribed, visiting one can read
-  as opting out.
+- Both platforms notice an opt-out within seconds, because the watcher checks
+  every two seconds: the wallpaper store timestamp on macOS, and each monitor's
+  wallpaper on Windows.
+- The opt-out detection compares the current wallpaper path against Wallpaper
+  Journey's folder, `~/WallpaperJourney` on macOS and
+  `%USERPROFILE%\WallpaperJourney` on Windows. If you keep old macOS Spaces that
+  still show a wallpaper from before you subscribed, visiting one can read as
+  opting out. On Windows only monitors that already show a panel count, so a
+  newly connected monitor, or a virtual desktop the last apply never reached,
+  is given a panel rather than read as an opt-out. A solid colour counts as
+  choosing your own wallpaper.
+- Windows logs to `%LOCALAPPDATA%\WallpaperJourney\wallpaper.log`; `-Status`
+  prints the last lines.
 - On macOS every Space stores its wallpaper as a file path, and the only public
   API to set one reaches the Space on screen. Wallpaper Journey alternates
   between `current-a-*` and `current-b-*` paths. A daily update changes the URL
