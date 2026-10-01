@@ -97,8 +97,11 @@ git -C "$TEST_ROOT/repository" remote add origin git@github.com:ianmatson/wallpa
 cat >"$TEST_ROOT/bin/gh" <<'EOF'
 #!/usr/bin/env zsh
 set -euo pipefail
+if [[ "${FIXTURE_REQUIRE_CLI_AUTH:-0}" == 1 ]]; then
+  [[ -z "${GH_TOKEN+x}" && -z "${GITHUB_TOKEN+x}" ]] || exit 91
+fi
 if [[ "${1:-}" == api && "${2:-}" == user ]]; then
-  print -r -- 'ianmatson'
+  print -r -- "${FIXTURE_GITHUB_LOGIN:-ianmatson}"
 elif [[ "${1:-}" == api && "${2:-}" == /repos/ianmatson/wallpaper-journey/commits/main ]]; then
   git -C "$FIXTURE_TEST_ROOT/repository" rev-parse HEAD
 elif [[ "${1:-}" == api ]]; then
@@ -253,6 +256,33 @@ if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" begin-run fixtur
 fi
 
 wrapper_run preflight >/dev/null
+
+# Explicit CLI authentication must work without a token file or inherited tokens.
+cp "$TEST_ROOT/wallpaper.env" "$TEST_ROOT/cli-auth.env"
+print -r -- 'AI_WALLPAPERS_GITHUB_AUTH_MODE=gh-cli' >>"$TEST_ROOT/cli-auth.env"
+print -r -- "AI_WALLPAPERS_GITHUB_TOKEN_FILE=$TEST_ROOT/nonexistent-token" >>"$TEST_ROOT/cli-auth.env"
+chmod 600 "$TEST_ROOT/cli-auth.env"
+cli_auth_run() {
+  GH_TOKEN=stale GITHUB_TOKEN=stale FIXTURE_REQUIRE_CLI_AUTH=1 \
+    AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/cli-auth.env" "$WRAPPER" --run-id fixture-run-a "$@"
+}
+cli_auth_run preflight >/dev/null
+if FIXTURE_GITHUB_LOGIN=unexpected-user cli_auth_run preflight >/dev/null 2>&1; then
+  print -u2 -r -- 'expected wrong CLI account rejection'
+  exit 1
+fi
+cp "$TEST_ROOT/cli-auth.env" "$TEST_ROOT/missing-token.env"
+print -r -- 'AI_WALLPAPERS_GITHUB_AUTH_MODE=token-file' >>"$TEST_ROOT/missing-token.env"
+if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/missing-token.env" "$WRAPPER" help >/dev/null 2>&1; then
+  print -u2 -r -- 'expected token-file mode to reject missing token without CLI fallback'
+  exit 1
+fi
+cp "$TEST_ROOT/cli-auth.env" "$TEST_ROOT/invalid-auth.env"
+print -r -- 'AI_WALLPAPERS_GITHUB_AUTH_MODE=invalid' >>"$TEST_ROOT/invalid-auth.env"
+if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/invalid-auth.env" "$WRAPPER" help >/dev/null 2>&1; then
+  print -u2 -r -- 'expected invalid authentication mode rejection'
+  exit 1
+fi
 wrapper_run accept-native left "$TEST_ROOT/input/left.png" >/dev/null
 wrapper_run accept-native middle "$TEST_ROOT/input/middle.png" >/dev/null
 wrapper_run accept-native right "$TEST_ROOT/input/right.png" >/dev/null

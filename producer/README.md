@@ -6,7 +6,7 @@ This is human-facing setup and recovery documentation. Routine scheduled product
 
 ## Configuration
 
-Copy `wallpaper.env.example` outside the public repository, replace its placeholders with absolute paths, and set mode `0600`. Store the fine-grained GitHub token in the separately configured token file, also outside the repository and mode `0600`; never put the token in the environment file, prompts, logs, or repository.
+Copy `wallpaper.env.example` outside the public repository, replace its placeholders with absolute paths, and set mode `0600`. By default, store the fine-grained GitHub token in the separately configured token file, also outside the repository and mode `0600`; never put the token in the environment file, prompts, logs, or repository. Alternatively, set `AI_WALLPAPERS_GITHUB_AUTH_MODE=gh-cli` to use the current user’s stored GitHub CLI login. This mode ignores inherited `GH_TOKEN` and `GITHUB_TOKEN` overrides and does not read or copy the token file. Preflight still requires the `ianmatson` account. Authentication failures never trigger an automatic fallback between modes.
 
 The wrapper rejects unsafe ownership, permissions, paths, dates, overlapping runtime roots, unexpected Git state, or the wrong GitHub identity. Agent-created inputs are accepted only from `AI_WALLPAPERS_INPUT_ROOT`.
 

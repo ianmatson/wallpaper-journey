@@ -37,20 +37,30 @@ readonly WORKSPACE_ROOT="${AI_WALLPAPERS_WORKSPACE_ROOT:-$DEFAULT_WORKSPACE}"
 readonly GITHUB_TOKEN_FILE="${AI_WALLPAPERS_GITHUB_TOKEN_FILE:-$WORKSPACE_ROOT/config/github-token}"
 readonly CONTROL_DIR="${AI_WALLPAPERS_CONTROL_DIR:-$WORKSPACE_ROOT/control/producer}"
 readonly RUN_DATE="${AI_WALLPAPERS_RUN_DATE:-$(TZ="${AI_WALLPAPERS_TIME_ZONE:-America/Chicago}" date +%F)}"
-[[ "$WORKSPACE_ROOT" == /* && "$CONTROL_DIR" == /* && "$GITHUB_TOKEN_FILE" == /* ]] || \
-  die "workspace, control directory, and GitHub token file must be absolute"
-[[ "${GITHUB_TOKEN_FILE:A}" == "${WORKSPACE_ROOT:A}"/* ]] || die "GitHub token file must be inside the workspace"
-[[ "${GITHUB_TOKEN_FILE:A}" != "${REPOSITORY:A}" && "${GITHUB_TOKEN_FILE:A}" != "${REPOSITORY:A}"/* ]] || \
-  die "GitHub token file must remain outside the public repository"
-[[ -f "$GITHUB_TOKEN_FILE" ]] || die "GitHub token file is missing: $GITHUB_TOKEN_FILE"
-[[ ! -L "$GITHUB_TOKEN_FILE" ]] || die "GitHub token file must not be a symlink: $GITHUB_TOKEN_FILE"
-if [[ "$OSTYPE" == linux* ]]; then
-  [[ "$(stat -c %u "$GITHUB_TOKEN_FILE")" == "$(id -u)" ]] || die "GitHub token file is not owned by the current user"
-  [[ "$(stat -c %a "$GITHUB_TOKEN_FILE")" == "600" ]] || die "GitHub token file must have mode 0600"
-fi
-readonly GITHUB_TOKEN="$(<"$GITHUB_TOKEN_FILE")"
-[[ "$GITHUB_TOKEN" == github_pat_* ]] || die "GitHub token file does not contain a fine-grained personal access token"
-export GH_TOKEN="$GITHUB_TOKEN"
+[[ "$WORKSPACE_ROOT" == /* && "$CONTROL_DIR" == /* ]] || \
+  die "workspace and control directory must be absolute"
+case "${AI_WALLPAPERS_GITHUB_AUTH_MODE:-token-file}" in
+  token-file)
+    [[ "$GITHUB_TOKEN_FILE" == /* ]] || die "GitHub token file must be absolute"
+    [[ "${GITHUB_TOKEN_FILE:A}" == "${WORKSPACE_ROOT:A}"/* ]] || die "GitHub token file must be inside the workspace"
+    [[ "${GITHUB_TOKEN_FILE:A}" != "${REPOSITORY:A}" && "${GITHUB_TOKEN_FILE:A}" != "${REPOSITORY:A}"/* ]] || \
+      die "GitHub token file must remain outside the public repository"
+    [[ -f "$GITHUB_TOKEN_FILE" ]] || die "GitHub token file is missing: $GITHUB_TOKEN_FILE"
+    [[ ! -L "$GITHUB_TOKEN_FILE" ]] || die "GitHub token file must not be a symlink: $GITHUB_TOKEN_FILE"
+    if [[ "$OSTYPE" == linux* ]]; then
+      [[ "$(stat -c %u "$GITHUB_TOKEN_FILE")" == "$(id -u)" ]] || die "GitHub token file is not owned by the current user"
+      [[ "$(stat -c %a "$GITHUB_TOKEN_FILE")" == "600" ]] || die "GitHub token file must have mode 0600"
+    fi
+    readonly GITHUB_TOKEN="$(<"$GITHUB_TOKEN_FILE")"
+    [[ "$GITHUB_TOKEN" == github_pat_* ]] || die "GitHub token file does not contain a fine-grained personal access token"
+    export GH_TOKEN="$GITHUB_TOKEN"
+    ;;
+  gh-cli)
+    # Explicitly use gh's stored login, ignoring inherited token overrides.
+    unset GH_TOKEN GITHUB_TOKEN
+    ;;
+  *) die "GitHub auth mode must be token-file or gh-cli" ;;
+esac
 [[ "${CONTROL_DIR:A}" == "${WORKSPACE_ROOT:A}"/* ]] || die "control directory must be inside the workspace"
 [[ "$RUN_DATE" =~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ]] || die "invalid run date: $RUN_DATE"
 if date -d "$RUN_DATE" +%F >/dev/null 2>&1; then
